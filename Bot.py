@@ -86,12 +86,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        print("DOWNLOAD ERROR:", e)
+    print("DOWNLOAD ERROR:", repr(e))
 
-        await update.message.reply_text(
-            "❌ Не удалось обработать эту ссылку.\n\n"
-            "Попробуй другую публичную ссылку Instagram."
-        )
+    await update.message.reply_text(
+        "❌ Ошибка при обработке ссылки.\n\n"
+        f"Причина: {str(e)[:500]}"
+    )
+    
 
 
 def run_bot():
