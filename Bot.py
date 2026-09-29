@@ -90,21 +90,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if not os.path.exists(mp3_file):
-                raise Exception(
-                    "Аудиофайл не найден"
-                )
+                raise Exception("Аудиофайл не найден")
 
             with open(mp3_file, "rb") as audio_file:
                 await update.message.reply_audio(
                     audio=audio_file,
-                    title=title[:64],
+                    title=title[:64]
                 )
 
     except Exception as e:
-        print(
-            "DOWNLOAD ERROR:",
-            repr(e)
-        )
+        print("DOWNLOAD ERROR:", repr(e))
 
         await update.message.reply_text(
             "❌ Ошибка при обработке ссылки.\n\n"
@@ -113,11 +108,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def run_bot():
-    telegram_app = (
-        Application.builder()
-        .token(TOKEN)
-        .build()
-    )
+    telegram_app = Application.builder().token(TOKEN).build()
 
     telegram_app.add_handler(
         CommandHandler("start", start)
@@ -126,4 +117,24 @@ def run_bot():
     telegram_app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            handle
+            handle_message
+        )
+    )
+
+    print("Telegram bot started...")
+
+    telegram_app.run_polling(stop_signals=None)
+
+
+if __name__ == "__main__":
+    threading.Thread(
+        target=run_bot,
+        daemon=True
+    ).start()
+
+    port = int(os.environ.get("PORT", 10000))
+
+    app_web.run(
+        host="0.0.0.0",
+        port=port
+    )
