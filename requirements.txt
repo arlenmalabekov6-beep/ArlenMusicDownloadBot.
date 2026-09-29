@@ -1,5 +1,5 @@
 python-telegram-bot
 python-dotenv
-yt-dlp
 flask
+yt-dlp
 imageio-ffmpeg
