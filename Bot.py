@@ -1,9 +1,11 @@
 import os
-import threading
+import asyncio
 import tempfile
+import threading
 
 from flask import Flask
 from dotenv import load_dotenv
+
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -21,27 +23,105 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN не найден")
+
+
+# =========================
+# WEB SERVER ДЛЯ RENDER
+# =========================
+
 app_web = Flask(__name__)
 
 
 @app_web.route("/")
 def home():
-    return "Bot is running!"
+    return "Music Downloader Bot is running!"
 
+
+# =========================
+# START
+# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Привет! 🎵\n\n"
-        "Отправь мне ссылку на Instagram."
+        "Отправь мне публичную ссылку на Instagram Reel."
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# =========================
+# СКАЧИВАНИЕ AUDIO
+# =========================
+
+def download_audio(url, folder):
+
+    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+
+    output_template = os.path.join(
+        folder,
+        "%(title).80s.%(ext)s"
+    )
+
+    options = {
+        "format": "bestaudio/best",
+
+        "outtmpl": output_template,
+
+        "ffmpeg_location": ffmpeg_path,
+
+        "noplaylist": True,
+
+        "quiet": True,
+
+        "no_warnings": True,
+
+        # Немного замедляем запросы
+        "sleep_interval_requests": 2,
+        "sleep_interval": 1,
+        "max_sleep_interval": 3,
+
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=True)
+
+        downloaded_file = ydl.prepare_filename(info)
+
+        mp3_file = os.path.splitext(downloaded_file)[0] + ".mp3"
+
+        if os.path.exists(mp3_file):
+            return mp3_file
+
+        # Иногда расширение может отличаться
+        for filename in os.listdir(folder):
+            if filename.lower().endswith(".mp3"):
+                return os.path.join(folder, filename)
+
+    raise FileNotFoundError("MP3 файл не найден")
+
+
+# =========================
+# ОБРАБОТКА ССЫЛКИ
+# =========================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
     text = update.message.text.strip()
 
     if "instagram.com" not in text:
         await update.message.reply_text(
-            "Пожалуйста, отправь ссылку на Instagram."
+            "❌ Пожалуйста, отправь ссылку на Instagram."
         )
         return
 
@@ -51,64 +131,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
+
         with tempfile.TemporaryDirectory() as temp_dir:
 
-            output_template = os.path.join(
-                temp_dir,
-                "audio.%(ext)s"
+            # Скачивание выполняем отдельно,
+            # чтобы бот не зависал во время загрузки
+            audio_file = await asyncio.to_thread(
+                download_audio,
+                text,
+                temp_dir
             )
 
-            ydl_opts = {
-                "format": "bestaudio/best",
-                "outtmpl": output_template,
-                "quiet": True,
-                "noplaylist": True,
-                "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }
-                ],
-            }
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(
-                    text,
-                    download=True
-                )
-
-            title = info.get(
-                "title",
-                "Instagram audio"
+            await update.message.reply_text(
+                "🎵 Готово! Отправляю аудио..."
             )
 
-            mp3_file = os.path.join(
-                temp_dir,
-                "audio.mp3"
-            )
+            with open(audio_file, "rb") as audio:
 
-            if not os.path.exists(mp3_file):
-                raise Exception("Аудиофайл не найден")
-
-            with open(mp3_file, "rb") as audio_file:
                 await update.message.reply_audio(
-                    audio=audio_file,
-                    title=title[:64]
+                    audio=audio,
+                    title="Instagram Audio"
                 )
 
-    except Exception as e:
-        print("DOWNLOAD ERROR:", repr(e))
+    except Exception as error:
 
-        await update.message.reply_text(
-            "❌ Ошибка при обработке ссылки.\n\n"
-            f"Причина: {str(e)[:500]}"
-        )
+        error_text = str(error)
 
+        if "429" in error_text or "Too Many Requests" in error_text:
+
+            await update.message.reply_text(
+                "⚠️ Instagram временно ограничил запросы "
+                "с нашего сервера.\n\n"
+                "Попробуй эту ссылку немного позже."
+            )
+
+        elif "login required" in error_text.lower():
+
+            await update.message.reply_text(
+                "🔒 Instagram требует авторизацию для этой ссылки.\n\n"
+                "Попробуй другую публичную ссылку."
+            )
+
+        else:
+
+            await update.message.reply_text(
+                "❌ Не удалось обработать ссылку.\n\n"
+                "Попробуй другую публичную ссылку."
+            )
+
+        print("DOWNLOAD ERROR:", error)
+
+
+# =========================
+# ЗАПУСК TELEGRAM
+# =========================
 
 def run_bot():
-    telegram_app = Application.builder().token(TOKEN).build()
+
+    telegram_app = (
+        Application
+        .builder()
+        .token(TOKEN)
+        .build()
+    )
 
     telegram_app.add_handler(
         CommandHandler("start", start)
@@ -123,18 +208,15 @@ def run_bot():
 
     print("Telegram bot started...")
 
-    telegram_app.run_polling(stop_signals=None)
+    telegram_app.run_polling(
+        stop_signals=None
+    )
 
+
+# =========================
+# MAIN
+# =========================
 
 if __name__ == "__main__":
-    threading.Thread(
-        target=run_bot,
-        daemon=True
-    ).start()
 
-    port = int(os.environ.get("PORT", 10000))
-
-    app_web.run(
-        host="0.0.0.0",
-        port=port
-    )
+    bot_thread = threading.Thread(
