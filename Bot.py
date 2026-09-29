@@ -1,7 +1,7 @@
 import os
-import asyncio
-import tempfile
 import threading
+import tempfile
+import time
 
 from flask import Flask
 from dotenv import load_dotenv
@@ -23,25 +23,13 @@ load_dotenv()
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN не найден")
-
-
-# =========================
-# WEB SERVER ДЛЯ RENDER
-# =========================
-
 app_web = Flask(__name__)
 
 
 @app_web.route("/")
 def home():
-    return "Music Downloader Bot is running!"
+    return "Bot is running!"
 
-
-# =========================
-# START
-# =========================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -50,73 +38,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
-# СКАЧИВАНИЕ AUDIO
-# =========================
-
-def download_audio(url, folder):
-
-    ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-
-    output_template = os.path.join(
-        folder,
-        "%(title).80s.%(ext)s"
-    )
-
-    options = {
-        "format": "bestaudio/best",
-
-        "outtmpl": output_template,
-
-        "ffmpeg_location": ffmpeg_path,
-
-        "noplaylist": True,
-
-        "quiet": True,
-
-        "no_warnings": True,
-
-        # Немного замедляем запросы
-        "sleep_interval_requests": 2,
-        "sleep_interval": 1,
-        "max_sleep_interval": 3,
-
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-    }
-
-    with yt_dlp.YoutubeDL(options) as ydl:
-        info = ydl.extract_info(url, download=True)
-
-        downloaded_file = ydl.prepare_filename(info)
-
-        mp3_file = os.path.splitext(downloaded_file)[0] + ".mp3"
-
-        if os.path.exists(mp3_file):
-            return mp3_file
-
-        # Иногда расширение может отличаться
-        for filename in os.listdir(folder):
-            if filename.lower().endswith(".mp3"):
-                return os.path.join(folder, filename)
-
-    raise FileNotFoundError("MP3 файл не найден")
-
-
-# =========================
-# ОБРАБОТКА ССЫЛКИ
-# =========================
-
-async def handle_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
     if "instagram.com" not in text:
@@ -125,75 +47,132 @@ async def handle_message(
         )
         return
 
-    await update.message.reply_text(
+    status = await update.message.reply_text(
         "⏳ Получил ссылку!\n"
         "Начинаю обработку..."
     )
 
+    temp_dir = tempfile.mkdtemp()
+
     try:
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        output_template = os.path.join(
+            temp_dir,
+            "%(id)s.%(ext)s"
+        )
 
-            # Скачивание выполняем отдельно,
-            # чтобы бот не зависал во время загрузки
-            audio_file = await asyncio.to_thread(
-                download_audio,
-                text,
-                temp_dir
+        ydl_opts = {
+            "outtmpl": output_template,
+            "format": "bestaudio/best",
+            "noplaylist": True,
+
+            "quiet": True,
+            "no_warnings": True,
+
+            # Повторные попытки при временных ошибках
+            "retries": 3,
+            "fragment_retries": 3,
+
+            # Небольшая пауза между запросами
+            "sleep_interval_requests": 2,
+
+            # Конвертация в MP3
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
+
+            "ffmpeg_location": ffmpeg_path,
+
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Linux; Android 10; K) "
+                    "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
+                    "Chrome/130.0.0.0 Mobile Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        }
+
+        # Небольшая пауза перед обращением к Instagram
+        time.sleep(2)
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(text, download=True)
+
+        title = info.get("title") or "Instagram Music"
+
+        audio_file = None
+
+        for filename in os.listdir(temp_dir):
+            if filename.lower().endswith(".mp3"):
+                audio_file = os.path.join(temp_dir, filename)
+                break
+
+        if not audio_file:
+            raise Exception("MP3 файл не был создан.")
+
+        await status.edit_text(
+            "✅ Готово!\n"
+            "Отправляю музыку..."
+        )
+
+        with open(audio_file, "rb") as audio:
+            await update.message.reply_audio(
+                audio=audio,
+                title=title[:64],
+                performer="Instagram",
             )
 
-            await update.message.reply_text(
-                "🎵 Готово! Отправляю аудио..."
-            )
+        await status.delete()
 
-            with open(audio_file, "rb") as audio:
+    except Exception as e:
 
-                await update.message.reply_audio(
-                    audio=audio,
-                    title="Instagram Audio"
-                )
-
-    except Exception as error:
-
-        error_text = str(error)
+        error_text = str(e)
 
         if "429" in error_text or "Too Many Requests" in error_text:
-
-            await update.message.reply_text(
-                "⚠️ Instagram временно ограничил запросы "
-                "с нашего сервера.\n\n"
-                "Попробуй эту ссылку немного позже."
+            message = (
+                "⚠️ Instagram временно ограничил запросы.\n\n"
+                "Попробуй другую публичную ссылку через несколько минут."
             )
 
-        elif "login required" in error_text.lower():
+        elif "login" in error_text.lower() or "logged" in error_text.lower():
+            message = (
+                "🔐 Instagram требует авторизацию.\n\n"
+                "Попробуй другой публичный Reel."
+            )
 
-            await update.message.reply_text(
-                "🔒 Instagram требует авторизацию для этой ссылки.\n\n"
-                "Попробуй другую публичную ссылку."
+        elif "private" in error_text.lower():
+            message = (
+                "🔒 Этот аккаунт или Reel закрытый.\n\n"
+                "Отправь публичную ссылку."
             )
 
         else:
-
-            await update.message.reply_text(
+            message = (
                 "❌ Не удалось обработать ссылку.\n\n"
-                "Попробуй другую публичную ссылку."
+                f"Причина: {error_text[:700]}"
             )
 
-        print("DOWNLOAD ERROR:", error)
+        await status.edit_text(message)
 
+    finally:
+        # Удаляем временные файлы
+        try:
+            for filename in os.listdir(temp_dir):
+                os.remove(os.path.join(temp_dir, filename))
+            os.rmdir(temp_dir)
+        except Exception:
+            pass
 
-# =========================
-# ЗАПУСК TELEGRAM
-# =========================
 
 def run_bot():
-
-    telegram_app = (
-        Application
-        .builder()
-        .token(TOKEN)
-        .build()
-    )
+    telegram_app = Application.builder().token(TOKEN).build()
 
     telegram_app.add_handler(
         CommandHandler("start", start)
@@ -213,10 +192,18 @@ def run_bot():
     )
 
 
-# =========================
-# MAIN
-# =========================
-
 if __name__ == "__main__":
 
-    bot_thread = threading.Thread(
+    # Telegram запускаем в отдельном потоке
+    threading.Thread(
+        target=run_bot,
+        daemon=True
+    ).start()
+
+    # Render Web Service
+    port = int(os.environ.get("PORT", 10000))
+
+    app_web.run(
+        host="0.0.0.0",
+        port=port
+    )
