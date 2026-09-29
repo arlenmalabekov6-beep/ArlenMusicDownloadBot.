@@ -61,7 +61,7 @@ def run_bot():
     )
 
     print("Telegram bot started...")
-    telegram_app.run_polling()
+    telegram_app.run_polling(stop_signals=None)
 
 
 if __name__ == "__main__":
